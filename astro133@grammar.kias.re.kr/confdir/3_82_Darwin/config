@@ -1,0 +1,9 @@
+# configuration for Healpix 3.82
+HEALPIX=/Users/dongha/CosmoSummerSchool/Healpix_3.82 ; export HEALPIX
+HPX_CONF_DIR=/Users/dongha/CosmoSummerSchool/Healpix_3.82/confdir/3_82_Darwin
+if [ -r ${HPX_CONF_DIR}/idl.sh ] ; then . ${HPX_CONF_DIR}/idl.sh ; fi
+if [ -r ${HPX_CONF_DIR}/gdl.sh ] ; then . ${HPX_CONF_DIR}/gdl.sh ; fi
+if [ -r ${HPX_CONF_DIR}/fl.sh ]  ; then . ${HPX_CONF_DIR}/fl.sh  ; fi
+if [ -r ${HPX_CONF_DIR}/f90.sh ] ; then . ${HPX_CONF_DIR}/f90.sh ; fi
+if [ -r ${HPX_CONF_DIR}/cpp.sh ] ; then . ${HPX_CONF_DIR}/cpp.sh ; fi
+if [ -r ${HPX_CONF_DIR}/c.sh ] ;   then . ${HPX_CONF_DIR}/c.sh ;   fi
