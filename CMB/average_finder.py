@@ -5,6 +5,7 @@ import camb
 import multiprocessing as mp
 from joblib import Parallel, delayed, parallel_backend
 from numba import jit
+import time
 
 # Importing modules required for maps
 from matplotlib import pyplot as plt
@@ -34,21 +35,19 @@ def east_phi(lon_c, lat_c, lon_p, lat_p):
 
 # Generate polarization vectors using Numba
 @jit(nopython=True)
-def pol_vec(Q, U):
-    psi = 0.5 * np.arctan2(U, Q)
-    P = np.sqrt(Q**2 + U**2)
+def pol_vec(Qr, Ur):
+    psi = 0.5 * np.arctan2(Ur, Qr) + np.pi
+    P = np.sqrt(Qr**2 + Ur**2)
     return psi, P
 
 
-# Functions needed for plots
-
-
 # Function to create inputs for vector map
-def vectormap(step, Q, U):
+def vectormap(step, Qr, Ur):
     sample_row = np.arange(0, 200, step)
     sample_col = np.arange(0, 200, step)
     psi, P = pol_vec(
-        Q[np.ix_(sample_row, sample_col)], U[np.ix_(sample_row, sample_col)]
+        Qr[np.ix_(sample_row, sample_col)],
+        Ur[np.ix_(sample_row, sample_col)],
     )
     x, y = np.meshgrid(
         np.arange(-2.5, 2.5, step / 200 * 5), np.arange(-2.5, 2.5, step / 200 * 5)
@@ -63,21 +62,25 @@ def compute_vectormaps(average, step):
     x_dict, y_dict, u_dict, v_dict = {}, {}, {}, {}
     for minmax in range(2):
         x, y, ur, vr = vectormap(
-            step, average[minmax, 3, :, :], average[minmax, 4, :, :]
+            step,
+            average[minmax, 3, :, :],
+            average[minmax, 4, :, :],
         )
         x_dict[minmax] = x
         y_dict[minmax] = y
-        u_dict["Qr"] = ur
-        v_dict["Qr"] = vr
-        u_dict["Ur"] = ur
-        v_dict["Ur"] = vr
+        u_dict["Q"] = ur
+        v_dict["Q"] = vr
+        u_dict["U"] = ur
+        v_dict["U"] = vr
 
     return x_dict, y_dict, u_dict, v_dict
 
 
 # Function for plotting
 def plot_param(ax, im_data, x, y, u, v, params, minmax, quiver_params=None):
-    im = ax.imshow(im_data, extent=(-2.5, 2.5, -2.5, 2.5), cmap="coolwarm")
+    im = ax.imshow(
+        im_data, extent=(-2.5, 2.5, -2.5, 2.5), origin="lower", cmap="coolwarm"
+    )
     ax.grid()
     ax.set_xlabel("Degrees")
     ax.set_ylabel("Degrees")
@@ -87,25 +90,18 @@ def plot_param(ax, im_data, x, y, u, v, params, minmax, quiver_params=None):
     plt.colorbar(im, cax=cax, format="%.2f")
 
     if quiver_params:
-        ax.quiver(x, y, u, v, scale=15, headwidth=1, color="black")
+        ax.quiver(x, y, u, v, scale=8, headwidth=1, color="black")
 
 
 # Function to compute data for one peak with an index
 def process_peak(smooth_map, index, minmax, j, nside):
-    # Find angular coordinates of longitude and latitude of the given peak
     lon, lat = hp.pix2ang(nside, index[minmax, j], lonlat=True)
-    # position vector of the peak
     pos = hp.ang2vec(lon, lat, lonlat=True)
-    # Find neighbours in a 5x5 degree area centred at the central point
     neigh = hp.query_disc(nside, pos, np.radians(np.sqrt(2 * 2.5**2)))
     neigh_lon, neigh_lat = hp.pix2ang(nside, neigh, lonlat=True)
-    # getting angluar coordinates of tbe neighbour points
     phi = east_phi(lon, lat, neigh_lon, neigh_lat)
-    # array of values of an empty map which will then be filled by data of neighbours
     empty = np.zeros((5, hp.nside2npix(nside)))
-    # array for the map of the neighbours of this peak
     result = np.zeros((5, 200, 200))
-    # loop for each parameter
     for pindx in range(5):
         if pindx < 3:
             empty[pindx, neigh] = smooth_map[pindx, neigh]
@@ -125,13 +121,12 @@ def process_peak(smooth_map, index, minmax, j, nside):
 
 
 def stack_cmb_params(no_spots, lensing=True, nside=512):
-    # Use input initial params to generate CMB spectra
     planck2018pars = camb.read_ini("planck_2018.ini")
     planck2018 = camb.get_results(planck2018pars)
     powers = planck2018.get_cmb_power_spectra(
         planck2018pars, CMB_unit="muK", raw_cl=True
     )
-    if lensing == True:
+    if lensing:
         aCl_Total = powers["total"]
     else:
         aCl_Total = powers["unlensed_total"]
@@ -151,13 +146,11 @@ def stack_cmb_params(no_spots, lensing=True, nside=512):
         [np.argsort(smooth[0])[-no_spots:], np.argsort(smooth[0])[:no_spots]]
     )
 
-    # Initialize the final stacked array
     stacked = np.zeros((2, 5, 200, 200))
 
-    # Set multiprocessing start method to 'spawn' or 'forkserver'
     mp.set_start_method("spawn", force=True)
     with parallel_backend("loky"):
-        results = Parallel(n_jobs=-1)(
+        results = Parallel(n_jobs=8, timeout=600)(
             delayed(process_peak)(smooth, index, minmax, j, nside)
             for minmax in range(2)
             for j in range(no_spots)
@@ -170,15 +163,21 @@ def stack_cmb_params(no_spots, lensing=True, nside=512):
 
 # Run function
 peaks = 20000
-lensed = stack_cmb_params(peaks)
-nolens = stack_cmb_params(peaks)
 
-# vector sample step
+start_time = time.time()
+lensed = stack_cmb_params(peaks, lensing=True)
+end_time = time.time()
+print(f"Runtime for lensed stack: {end_time - start_time} seconds")
+
+start_time = time.time()
+nolens = stack_cmb_params(peaks, lensing=False)
+end_time = time.time()
+print(f"Runtime for nolens stack: {end_time - start_time} seconds")
+
 step = 8
 x_dict, y_dict, ul_dict, vl_dict = compute_vectormaps(lensed, step)
 x_dict, y_dict, un_dict, vn_dict = compute_vectormaps(nolens, step)
 
-# Create figures
 figl, axl = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
 fign, axn = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
 
@@ -193,12 +192,11 @@ for minmax in range(2):
             "Ur Polarisation",
         ],
     ):
-        # lensed plot
         quiver_params = None
         if params == 3:
-            quiver_params = "Qr"
+            quiver_params = "Q"
         elif params == 4:
-            quiver_params = "Ur"
+            quiver_params = "U"
 
         plot_param(
             axl[params, minmax],
@@ -212,8 +210,6 @@ for minmax in range(2):
             quiver_params,
         )
 
-        # no lens plot
-
         plot_param(
             axn[params, minmax],
             nolens[minmax, params, :, :],
@@ -226,7 +222,6 @@ for minmax in range(2):
             quiver_params,
         )
 
-# Save figures
 figl.savefig("Output/Lensed_Average.png")
 fign.savefig("Output/Nolensed_Average.png")
 
