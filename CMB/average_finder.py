@@ -27,33 +27,30 @@ def Ur(Q, U, phi):
 
 # Convert longitude and latitude to angle from east using Numba
 @jit(nopython=True)
-def east_phi(lon_c, lat_c, lon_p, lat_p):
-    dlon = np.radians(lon_p - lon_c)
-    dlat = np.radians(lat_p - lat_c)
-    return np.arctan2(dlat, -dlon)
+def east_phi(Q, U):
+    return 0.5 * np.arctan2(Q, U)
 
 
 # Generate polarization vectors using Numba
 @jit(nopython=True)
-def pol_vec(Qr, Ur):
-    psi = 0.5 * np.arctan2(Ur, Qr) + np.pi
-    P = np.sqrt(Qr**2 + Ur**2)
-    return psi, P
+def pol_vec(Q, U):
+    P = np.sqrt(Q**2 + U**2)
+    return east_phi(Q, U), P
 
 
 # Function to create inputs for vector map
-def vectormap(step, Qr, Ur):
+def vectormap(step, Q, U):
     sample_row = np.arange(0, 200, step)
     sample_col = np.arange(0, 200, step)
-    psi, P = pol_vec(
-        Qr[np.ix_(sample_row, sample_col)],
-        Ur[np.ix_(sample_row, sample_col)],
+    phi, P = pol_vec(
+        Q[np.ix_(sample_row, sample_col)],
+        U[np.ix_(sample_row, sample_col)],
     )
     x, y = np.meshgrid(
         np.arange(-2.5, 2.5, step / 200 * 5), np.arange(-2.5, 2.5, step / 200 * 5)
     )
-    u = P * np.cos(psi)
-    v = P * np.sin(psi)
+    u = P * np.sin(phi)
+    v = P * np.cos(phi)
     return x, y, u, v
 
 
@@ -63,8 +60,8 @@ def compute_vectormaps(average, step):
     for minmax in range(2):
         x, y, ur, vr = vectormap(
             step,
-            average[minmax, 3, :, :],
-            average[minmax, 4, :, :],
+            average[minmax, 1, :, :],
+            average[minmax, 2, :, :],
         )
         x_dict[minmax] = x
         y_dict[minmax] = y
@@ -98,8 +95,7 @@ def process_peak(smooth_map, index, minmax, j, nside):
     lon, lat = hp.pix2ang(nside, index[minmax, j], lonlat=True)
     pos = hp.ang2vec(lon, lat, lonlat=True)
     neigh = hp.query_disc(nside, pos, np.radians(np.sqrt(2 * 2.5**2)))
-    neigh_lon, neigh_lat = hp.pix2ang(nside, neigh, lonlat=True)
-    phi = east_phi(lon, lat, neigh_lon, neigh_lat)
+    phi = east_phi(smooth_map[1, neigh], smooth_map[2, neigh])
     empty = np.zeros((5, hp.nside2npix(nside)))
     result = np.zeros((5, 200, 200))
     for pindx in range(5):
@@ -162,7 +158,7 @@ def stack_cmb_params(no_spots, lensing=True, nside=512):
 
 
 # Run function
-peaks = 20000
+peaks = 1000
 
 start_time = time.time()
 lensed = stack_cmb_params(peaks, lensing=True)
