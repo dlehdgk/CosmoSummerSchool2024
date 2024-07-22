@@ -27,15 +27,21 @@ def Ur(Q, U, phi):
 
 # Convert longitude and latitude to angle from east using Numba
 @jit(nopython=True)
-def east_phi(Q, U):
-    return 0.5 * np.arctan2(Q, U)
+def east_phi(lon_c, lat_c, lon_p, lat_p):
+    dlon = np.radians(lon_p - lon_c)
+    dlat = np.radians(lat_p - lat_c)
+    y = np.cos(lat_p) * np.sin(dlon)
+    x = np.sin(np.radians(lat_c)) * np.cos(np.radians(lat_p)) * np.cos(dlon) - np.cos(
+        np.radians(lat_c)
+    ) * np.sin(np.radians(lat_p))
+    return np.arctan2(y, x)
 
 
 # Generate polarization vectors using Numba
-@jit(nopython=True)
 def pol_vec(Q, U):
+    phi = 0.5 * np.arctan2(U, Q)
     P = np.sqrt(Q**2 + U**2)
-    return east_phi(Q, U), P
+    return phi, P
 
 
 # Function to create inputs for vector map
@@ -49,8 +55,8 @@ def vectormap(step, Q, U):
     x, y = np.meshgrid(
         np.arange(-2.5, 2.5, step / 200 * 5), np.arange(-2.5, 2.5, step / 200 * 5)
     )
-    u = P * np.sin(phi)
-    v = P * np.cos(phi)
+    u = -P * np.cos(2 * phi)
+    v = P * np.sin(2 * phi)
     return x, y, u, v
 
 
@@ -94,8 +100,10 @@ def plot_param(ax, im_data, x, y, u, v, params, minmax, quiver_params=None):
 def process_peak(smooth_map, index, minmax, j, nside):
     lon, lat = hp.pix2ang(nside, index[minmax, j], lonlat=True)
     pos = hp.ang2vec(lon, lat, lonlat=True)
+    # Find neighbours in a 5x5 degree area centred at the central point
     neigh = hp.query_disc(nside, pos, np.radians(np.sqrt(2 * 2.5**2)))
-    phi = east_phi(smooth_map[1, neigh], smooth_map[2, neigh])
+    neigh_lon, neigh_lat = hp.pix2ang(nside, neigh, lonlat=True)
+    phi = east_phi(lon, lat, neigh_lon, neigh_lat)
     empty = np.zeros((5, hp.nside2npix(nside)))
     result = np.zeros((5, 200, 200))
     for pindx in range(5):
@@ -158,7 +166,7 @@ def stack_cmb_params(no_spots, lensing=True, nside=512):
 
 
 # Run function
-peaks = 1000
+peaks = 200
 
 start_time = time.time()
 lensed = stack_cmb_params(peaks, lensing=True)
