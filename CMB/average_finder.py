@@ -81,7 +81,7 @@ def plot_param(ax, im_data, x, y, u, v, params, minmax, quiver_params=None):
     plt.colorbar(im, cax=cax, format="%.2f")
 
     if quiver_params:
-        ax.quiver(x, y, u, v, scale=8, headwidth=1, color="black")
+        ax.quiver(x, y, u, v, scale=10, headwidth=1, color="black")
 
 
 # Function to compute data for one peak with an index
@@ -94,16 +94,17 @@ def process_peak(smooth_map, index, minmax, j, nside):
 
     # Rotating the map to have the peak be at the centre
     rot = hp.Rotator(rot=[lon, lat])
-    rot_lon, _ = rot(neigh_lon, neigh_lat)
-    phi = np.radians(rot_lon)
+    rot_lon, rot_lat = rot(neigh_lon, neigh_lat)
+    phi = np.arctan2(rot_lat, rot_lon)
     empty_original = np.zeros((3, hp.nside2npix(nside)))
     pol_map = np.zeros((2, hp.nside2npix(nside)))
     # made map of only the neighbours of peak in original coordinates
     for pindx in range(3):
         empty_original[pindx, neigh] = smooth_map[pindx, neigh]
     rot_map = rot.rotate_map_alms(empty_original)
-    pol_map[0, neigh] = Qr(rot_map[1, neigh], rot_map[2, neigh], phi)
-    pol_map[1, neigh] = Ur(rot_map[1, neigh], rot_map[2, neigh], phi)
+    rot_indx = hp.ang2pix(nside, rot_lon, rot_lat, lonlat=True)
+    pol_map[0, neigh] = Qr(rot_map[1, rot_indx], rot_map[2, rot_indx], phi)
+    pol_map[1, neigh] = Ur(rot_map[1, rot_indx], rot_map[2, rot_indx], phi)
     pol_map[0, :] = rot.rotate_map_alms(pol_map[0, :])
     pol_map[1, :] = rot.rotate_map_alms(pol_map[1, :])
     result = np.zeros((5, 200, 200))
