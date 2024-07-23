@@ -25,18 +25,6 @@ def Ur(Q, U, phi):
     return Q * np.sin(2 * phi) - U * np.cos(2 * phi)
 
 
-# Convert longitude and latitude to angle from east using Numba
-@jit(nopython=True)
-def east_phi(lon_c, lat_c, lon_p, lat_p):
-    dlon = np.radians(lon_p - lon_c)
-    dlat = np.radians(lat_p - lat_c)
-    y = np.cos(lat_p) * np.sin(dlon)
-    x = np.sin(np.radians(lat_c)) * np.cos(np.radians(lat_p)) * np.cos(dlon) - np.cos(
-        np.radians(lat_c)
-    ) * np.sin(np.radians(lat_p))
-    return np.arctan2(y, x)
-
-
 # Generate polarization vectors using Numba
 def pol_vec(Q, U):
     phi = 0.5 * np.arctan2(U, Q)
@@ -103,23 +91,44 @@ def process_peak(smooth_map, index, minmax, j, nside):
     # Find neighbours in a 5x5 degree area centred at the central point
     neigh = hp.query_disc(nside, pos, np.radians(np.sqrt(2 * 2.5**2)))
     neigh_lon, neigh_lat = hp.pix2ang(nside, neigh, lonlat=True)
-    phi = east_phi(lon, lat, neigh_lon, neigh_lat)
-    empty = np.zeros((5, hp.nside2npix(nside)))
+
+    # Rotating the map to have the peak be at the centre
+    rot = hp.Rotator(rot=[lon, lat])
+    rot_lon, _ = rot(neigh_lon, neigh_lat)
+    phi = np.radians(rot_lon)
+    empty_original = np.zeros((3, hp.nside2npix(nside)))
+    pol_map = np.zeros((2, hp.nside2npix(nside)))
+    # made map of only the neighbours of peak in original coordinates
+    for pindx in range(3):
+        empty_original[pindx, neigh] = smooth_map[pindx, neigh]
+    rot_map = rot.rotate_map_alms(empty_original)
+    pol_map[0, neigh] = Qr(rot_map[1, neigh], rot_map[2, neigh], phi)
+    pol_map[1, neigh] = Ur(rot_map[1, neigh], rot_map[2, neigh], phi)
+    pol_map[0, :] = rot.rotate_map_alms(pol_map[0, :])
+    pol_map[1, :] = rot.rotate_map_alms(pol_map[1, :])
     result = np.zeros((5, 200, 200))
     for pindx in range(5):
         if pindx < 3:
-            empty[pindx, neigh] = smooth_map[pindx, neigh]
+            gnom_map = hp.gnomview(
+                rot_map[pindx, :],
+                reso=5 * 60 / 200,
+                return_projected_map=True,
+                no_plot=True,
+            )
         elif pindx == 3:
-            empty[pindx, neigh] = Qr(smooth_map[1, neigh], smooth_map[2, neigh], phi)
+            gnom_map = hp.gnomview(
+                pol_map[0, :],
+                reso=5 * 60 / 200,
+                return_projected_map=True,
+                no_plot=True,
+            )
         else:
-            empty[pindx, neigh] = Ur(smooth_map[1, neigh], smooth_map[2, neigh], phi)
-        gnom_map = hp.gnomview(
-            empty[pindx, :],
-            rot=(lon, lat),
-            reso=5 * 60 / 200,
-            return_projected_map=True,
-            no_plot=True,
-        )
+            gnom_map = hp.gnomview(
+                pol_map[1, :],
+                reso=5 * 60 / 200,
+                return_projected_map=True,
+                no_plot=True,
+            )
         result[pindx, :, :] = gnom_map
     return minmax, result
 
@@ -166,7 +175,7 @@ def stack_cmb_params(no_spots, lensing=True, nside=512):
 
 
 # Run function
-peaks = 200
+peaks = 100
 
 start_time = time.time()
 lensed = stack_cmb_params(peaks, lensing=True)
