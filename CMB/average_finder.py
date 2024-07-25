@@ -15,17 +15,18 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
 # Define Qr and Ur parameters using Numba
-@jit(nopython=True)
+@jit(nopython=True, parallel=True)
 def Qr(Q, U, phi):
     return -Q * np.cos(2 * phi) - U * np.sin(2 * phi)
 
 
-@jit(nopython=True)
+@jit(nopython=True, parallel=True)
 def Ur(Q, U, phi):
     return Q * np.sin(2 * phi) - U * np.cos(2 * phi)
 
 
 # Generate polarization vectors using Numba
+@jit(nopython=True)
 def pol_vec(Q, U):
     phi = 0.5 * np.arctan2(U, Q)
     P = np.sqrt(Q**2 + U**2)
@@ -87,31 +88,23 @@ def plot_param(ax, im_data, x, y, u, v, params, minmax, quiver_params=None):
 # Function to compute data for one peak with an index
 def process_peak(smooth_map, index, minmax, j, nside):
     lon, lat = hp.pix2ang(nside, index[minmax, j], lonlat=True)
-    pos = hp.ang2vec(lon, lat, lonlat=True)
-    # Find neighbours in a 5x5 degree area centred at the central point
-    neigh = hp.query_disc(nside, pos, np.radians(np.sqrt(2 * 2.5**2)))
+    rot = hp.Rotator(rot=[lon, lat], deg=True)
+    cmap = rot.rotate_map_alms(smooth_map)
+    neigh = hp.query_disc(512, np.array([1, 0, 0]), np.radians(np.sqrt(2 * 2.5**2)))
     neigh_lon, neigh_lat = hp.pix2ang(nside, neigh, lonlat=True)
-
-    # Rotating the map to have the peak be at the centre
-    rot = hp.Rotator(rot=[lon, lat])
-    rot_lon, rot_lat = rot(neigh_lon, neigh_lat)
-    phi = np.arctan2(rot_lat, rot_lon)
+    phi = np.arctan2(neigh_lat, np.where(neigh_lon < 180, neigh_lon, neigh_lon - 360))
     empty_original = np.zeros((3, hp.nside2npix(nside)))
     pol_map = np.zeros((2, hp.nside2npix(nside)))
     # made map of only the neighbours of peak in original coordinates
     for pindx in range(3):
         empty_original[pindx, neigh] = smooth_map[pindx, neigh]
-    rot_map = rot.rotate_map_alms(empty_original)
-    rot_indx = hp.ang2pix(nside, rot_lon, rot_lat, lonlat=True)
-    pol_map[0, neigh] = Qr(rot_map[1, rot_indx], rot_map[2, rot_indx], phi)
-    pol_map[1, neigh] = Ur(rot_map[1, rot_indx], rot_map[2, rot_indx], phi)
-    pol_map[0, :] = rot.rotate_map_alms(pol_map[0, :])
-    pol_map[1, :] = rot.rotate_map_alms(pol_map[1, :])
+    pol_map[0, neigh] = Qr(cmap[1, neigh], cmap[2, neigh], phi)
+    pol_map[1, neigh] = Ur(cmap[1, neigh], cmap[2, neigh], phi)
     result = np.zeros((5, 200, 200))
     for pindx in range(5):
         if pindx < 3:
             gnom_map = hp.gnomview(
-                rot_map[pindx, :],
+                cmap[pindx, :],
                 reso=5 * 60 / 200,
                 return_projected_map=True,
                 no_plot=True,
@@ -176,7 +169,7 @@ def stack_cmb_params(no_spots, lensing=True, nside=512):
 
 
 # Run function
-peaks = 20000
+peaks = 500
 
 start_time = time.time()
 lensed = stack_cmb_params(peaks, lensing=True)
