@@ -164,7 +164,7 @@ def stack_cmb_params(no_spots, lensing=True, nside=512):
 
     mp.set_start_method("spawn", force=True)
     with parallel_backend("loky"):
-        results = Parallel(n_jobs=8, timeout=600)(
+        results = Parallel(n_jobs=10, timeout=600)(
             delayed(process_peak)(smooth, index, minmax, j, nside)
             for minmax in range(2)
             for j in range(no_spots)
@@ -176,24 +176,24 @@ def stack_cmb_params(no_spots, lensing=True, nside=512):
 
 
 # Run function
-peaks = 100
+peaks = 20000
 
 start_time = time.time()
 lensed = stack_cmb_params(peaks, lensing=True)
 end_time = time.time()
 print(f"Runtime for lensed stack: {end_time - start_time} seconds")
 
-start_time = time.time()
-nolens = stack_cmb_params(peaks, lensing=False)
-end_time = time.time()
-print(f"Runtime for nolens stack: {end_time - start_time} seconds")
+# start_time = time.time()
+# nolens = stack_cmb_params(peaks, lensing=False)
+# end_time = time.time()
+# print(f"Runtime for nolens stack: {end_time - start_time} seconds")
 
 step = 8
 x_dict, y_dict, ul_dict, vl_dict = compute_vectormaps(lensed, step)
-x_dict, y_dict, un_dict, vn_dict = compute_vectormaps(nolens, step)
+# x_dict, y_dict, un_dict, vn_dict = compute_vectormaps(nolens, step)
 
 figl, axl = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
-fign, axn = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
+# fign, axn = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
 
 for minmax in range(2):
     for params, name in zip(
@@ -224,6 +224,7 @@ for minmax in range(2):
             quiver_params,
         )
 
+""""
         plot_param(
             axn[params, minmax],
             nolens[minmax, params, :, :],
@@ -235,8 +236,9 @@ for minmax in range(2):
             minmax,
             quiver_params,
         )
+        """
 
 figl.savefig("Output/Lensed_Average.png")
-fign.savefig("Output/Nolensed_Average.png")
+# fign.savefig("Output/Nolensed_Average.png")
 
 plt.show()
