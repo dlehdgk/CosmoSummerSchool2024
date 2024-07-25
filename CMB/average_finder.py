@@ -11,6 +11,9 @@ import time
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+# number of cpu cores to use
+cpu = 10
+
 # Functions needed for stacking
 
 
@@ -35,14 +38,11 @@ def pol_vec(Q, U):
 
 # Function to create inputs for vector map
 def vectormap(step, Q, U):
-    sample_row = np.arange(0, 200, step)
-    sample_col = np.arange(0, 200, step)
-    phi, P = pol_vec(
-        Q[np.ix_(sample_row, sample_col)],
-        U[np.ix_(sample_row, sample_col)],
-    )
+    sample_indices = np.ix_(np.arange(0, 200, step), np.arange(0, 200, step))
+    phi, P = pol_vec(Q[sample_indices], U[sample_indices])
     x, y = np.meshgrid(
-        np.arange(-2.5, 2.5, step / 200 * 5), np.arange(-2.5, 2.5, step / 200 * 5)
+        np.linspace(-2.5, 2.5, Q.shape[1] // step),
+        np.linspace(-2.5, 2.5, Q.shape[0] // step),
     )
     u = -P * np.cos(2 * phi)
     v = P * np.sin(2 * phi)
@@ -88,18 +88,19 @@ def plot_param(ax, im_data, x, y, u, v, params, minmax, quiver_params=None):
 # Function to compute data for one peak with an index
 def process_peak(smooth_map, index, minmax, j, nside):
     lon, lat = hp.pix2ang(nside, index[minmax, j], lonlat=True)
+    # rotate data to be centred on the peak
     rot = hp.Rotator(rot=[lon, lat], deg=True)
     cmap = rot.rotate_map_alms(smooth_map)
-    neigh = hp.query_disc(512, np.array([1, 0, 0]), np.radians(np.sqrt(2 * 2.5**2)))
+    # find the neighbours around the peak (vector = (1,0,0))
+    neigh = hp.query_disc(nside, np.array([1, 0, 0]), np.radians(np.sqrt(2 * 2.5**2)))
     neigh_lon, neigh_lat = hp.pix2ang(nside, neigh, lonlat=True)
+    # compute phi noting longitude goes from 0 to 360
     phi = np.arctan2(neigh_lat, np.where(neigh_lon < 180, neigh_lon, neigh_lon - 360))
-    empty_original = np.zeros((3, hp.nside2npix(nside)))
+
     pol_map = np.zeros((2, hp.nside2npix(nside)))
-    # made map of only the neighbours of peak in original coordinates
-    for pindx in range(3):
-        empty_original[pindx, neigh] = smooth_map[pindx, neigh]
     pol_map[0, neigh] = Qr(cmap[1, neigh], cmap[2, neigh], phi)
     pol_map[1, neigh] = Ur(cmap[1, neigh], cmap[2, neigh], phi)
+    # made map of only the neighbours of peak in original coordinates
     result = np.zeros((5, 200, 200))
     for pindx in range(5):
         if pindx < 3:
@@ -109,16 +110,9 @@ def process_peak(smooth_map, index, minmax, j, nside):
                 return_projected_map=True,
                 no_plot=True,
             )
-        elif pindx == 3:
-            gnom_map = hp.gnomview(
-                pol_map[0, :],
-                reso=5 * 60 / 200,
-                return_projected_map=True,
-                no_plot=True,
-            )
         else:
             gnom_map = hp.gnomview(
-                pol_map[1, :],
+                pol_map[pindx - 3, :],
                 reso=5 * 60 / 200,
                 return_projected_map=True,
                 no_plot=True,
@@ -157,7 +151,7 @@ def stack_cmb_params(no_spots, lensing=True, nside=512):
 
     mp.set_start_method("spawn", force=True)
     with parallel_backend("loky"):
-        results = Parallel(n_jobs=10, timeout=600)(
+        results = Parallel(n_jobs=cpu, timeout=600)(
             delayed(process_peak)(smooth, index, minmax, j, nside)
             for minmax in range(2)
             for j in range(no_spots)
@@ -171,22 +165,22 @@ def stack_cmb_params(no_spots, lensing=True, nside=512):
 # Run function
 peaks = 500
 
-start_time = time.time()
-lensed = stack_cmb_params(peaks, lensing=True)
-end_time = time.time()
-print(f"Runtime for lensed stack: {end_time - start_time} seconds")
-
 # start_time = time.time()
-# nolens = stack_cmb_params(peaks, lensing=False)
+# lensed = stack_cmb_params(peaks, lensing=True)
 # end_time = time.time()
-# print(f"Runtime for nolens stack: {end_time - start_time} seconds")
+# print(f"Runtime for lensed stack: {end_time - start_time} seconds")
+
+start_time = time.time()
+nolens = stack_cmb_params(peaks, lensing=False)
+end_time = time.time()
+print(f"Runtime for nolens stack: {end_time - start_time} seconds")
 
 step = 8
-x_dict, y_dict, ul_dict, vl_dict = compute_vectormaps(lensed, step)
-# x_dict, y_dict, un_dict, vn_dict = compute_vectormaps(nolens, step)
+# x_dict, y_dict, ul_dict, vl_dict = compute_vectormaps(lensed, step)
+x_dict, y_dict, un_dict, vn_dict = compute_vectormaps(nolens, step)
 
-figl, axl = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
-# fign, axn = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
+# figl, axl = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
+fign, axn = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
 
 for minmax in range(2):
     for params, name in zip(
@@ -206,19 +200,6 @@ for minmax in range(2):
             quiver_params = "U"
 
         plot_param(
-            axl[params, minmax],
-            lensed[minmax, params, :, :],
-            x_dict[minmax],
-            y_dict[minmax],
-            ul_dict.get(quiver_params, None),
-            vl_dict.get(quiver_params, None),
-            name,
-            minmax,
-            quiver_params,
-        )
-
-""""
-        plot_param(
             axn[params, minmax],
             nolens[minmax, params, :, :],
             x_dict[minmax],
@@ -230,8 +211,21 @@ for minmax in range(2):
             quiver_params,
         )
         """
+        plot_param(
+            axl[params, minmax],
+            lensed[minmax, params, :, :],
+            x_dict[minmax],
+            y_dict[minmax],
+            ul_dict.get(quiver_params, None),
+            vl_dict.get(quiver_params, None),
+            name,
+            minmax,
+            quiver_params,
+        )
+        """
 
-figl.savefig("Output/Lensed_Average.png")
-# fign.savefig("Output/Nolensed_Average.png")
+
+# figl.savefig("Output/Lensed_Average.png")
+fign.savefig("Output/Nolensed_Average.png")
 
 plt.show()
