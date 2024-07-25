@@ -12,7 +12,7 @@ from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 # number of cpu cores to use
-cpu = 10
+cpu = 11
 
 # Functions needed for stacking
 
@@ -163,12 +163,12 @@ def stack_cmb_params(no_spots, lensing=True, nside=512):
 
 
 # Run function
-peaks = 500
+peaks = 20000
 
-# start_time = time.time()
-# lensed = stack_cmb_params(peaks, lensing=True)
-# end_time = time.time()
-# print(f"Runtime for lensed stack: {end_time - start_time} seconds")
+start_time = time.time()
+lensed = stack_cmb_params(peaks, lensing=True)
+end_time = time.time()
+print(f"Runtime for lensed stack: {end_time - start_time} seconds")
 
 start_time = time.time()
 nolens = stack_cmb_params(peaks, lensing=False)
@@ -176,10 +176,10 @@ end_time = time.time()
 print(f"Runtime for nolens stack: {end_time - start_time} seconds")
 
 step = 8
-# x_dict, y_dict, ul_dict, vl_dict = compute_vectormaps(lensed, step)
+x_dict, y_dict, ul_dict, vl_dict = compute_vectormaps(lensed, step)
 x_dict, y_dict, un_dict, vn_dict = compute_vectormaps(nolens, step)
 
-# figl, axl = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
+figl, axl = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
 fign, axn = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
 
 for minmax in range(2):
@@ -210,7 +210,7 @@ for minmax in range(2):
             minmax,
             quiver_params,
         )
-        """
+
         plot_param(
             axl[params, minmax],
             lensed[minmax, params, :, :],
@@ -222,10 +222,9 @@ for minmax in range(2):
             minmax,
             quiver_params,
         )
-        """
 
 
-# figl.savefig("Output/Lensed_Average.png")
+figl.savefig("Output/Lensed_Average.png")
 fign.savefig("Output/Nolensed_Average.png")
 
 plt.show()
