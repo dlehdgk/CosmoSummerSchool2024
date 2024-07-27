@@ -6,6 +6,7 @@ import multiprocessing as mp
 from joblib import Parallel, delayed, parallel_backend
 from numba import jit
 import time
+import pandas as pd
 
 # Importing modules required for maps
 from matplotlib import pyplot as plt
@@ -44,8 +45,8 @@ def vectormap(step, Q, U):
         np.linspace(-2.5, 2.5, Q.shape[1] // step),
         np.linspace(-2.5, 2.5, Q.shape[0] // step),
     )
-    u = -P * np.cos(2 * phi)
-    v = P * np.sin(2 * phi)
+    u = -P * np.sin(2 * phi)
+    v = P * np.cos(2 * phi)
     return x, y, u, v
 
 
@@ -170,10 +171,24 @@ lensed = stack_cmb_params(peaks, lensing=True)
 end_time = time.time()
 print(f"Runtime for lensed stack: {end_time - start_time} seconds")
 
+# saving data for analysis as csv with a file for array shape
+df_lensed = pd.DataFrame(lensed.reshape(-1, lensed.shape[-1]))
+df_lensed.to_csv("Output/lensed.csv", index=False)
+lensed_shape = "lensed_shape.txt"
+with open(lensed_shape, "w") as f:
+    f.write(",".join(map(str, lensed.shape)))
+
 start_time = time.time()
 nolens = stack_cmb_params(peaks, lensing=False)
 end_time = time.time()
 print(f"Runtime for nolens stack: {end_time - start_time} seconds")
+
+# saving data for analysis as csv with a file for array shape
+df_nolens = pd.DataFrame(nolens.reshape(-1, nolens.shape[-1]))
+df_nolens.to_csv("Output/nolens.csv", index=False)
+nolens_shape = "nolens_shape.txt"
+with open(nolens_shape, "w") as f:
+    f.write(",".join(map(str, nolens.shape)))
 
 step = 8
 x_dict, y_dict, ul_dict, vl_dict = compute_vectormaps(lensed, step)
