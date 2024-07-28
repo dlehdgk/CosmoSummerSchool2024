@@ -1,56 +1,137 @@
+# Importing modules required for stacking
 import numpy as np
-import camb
 import healpy as hp
-from camb import model, initialpower
+import camb
+import multiprocessing as mp
+from joblib import Parallel, delayed, parallel_backend
 from numba import jit
+import time
+import pandas as pd
+
+# Importing modules required for maps
+from matplotlib import pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+
+# number of cpu cores to use
+cpu = 11
+
+# Functions needed for stacking
 
 
-# Define Qr and Ur parameters
-@jit(nopython=True)
+# Define Qr and Ur parameters using Numba
+@jit(nopython=True, parallel=True)
 def Qr(Q, U, phi):
-    Qr = -Q * np.cos(2 * phi) - U * np.sin(2 * phi)
-    return Qr
+    return -Q * np.cos(2 * phi) - U * np.sin(2 * phi)
 
 
-@jit(nopython=True)
+@jit(nopython=True, parallel=True)
 def Ur(Q, U, phi):
-    Ur = Q * np.sin(2 * phi) - U * np.cos(2 * phi)
-    return Ur
+    return Q * np.sin(2 * phi) - U * np.cos(2 * phi)
 
 
-# function which takes hp.pix2ang(lonlat=True) outputs of longitude and latitude in degrees and converts them into an angle from the east from the central point
-# angle is in radians
-@jit(nopython=True)
-def east_phi(lon_c, lat_c, lon_p, lat_p):
-    dlon = np.radians(lon_p - lon_c)
-    dlat = np.radians(lat_p - lat_c)
-    # angle from east with east pointing left
-    return np.arctan2(dlat, -dlon)
-
-
-# create function which generates polarisation vectors
+# Generate polarization vectors using Numba
 @jit(nopython=True)
 def pol_vec(Q, U):
-    psi = 0.5 * np.arctan2(U, Q)
+    phi = 0.5 * np.arctan2(U, Q)
     P = np.sqrt(Q**2 + U**2)
-    return psi, P
+    return phi, P
 
 
-def stack_cmb_params(no_spots, param_file="planck_2018.ini", nside=512):
-    # Use input initial params to generate cmb spectra
-    planck2018pars = camb.read_ini(param_file)
+# Function to create inputs for vector map
+def vectormap(step, Q, U):
+    sample_indices = np.ix_(np.arange(0, 200, step), np.arange(0, 200, step))
+    phi, P = pol_vec(Q[sample_indices], U[sample_indices])
+    x, y = np.meshgrid(
+        np.linspace(-2.5, 2.5, Q.shape[1] // step),
+        np.linspace(-2.5, 2.5, Q.shape[0] // step),
+    )
+    u = -P * np.sin(2 * phi)
+    v = P * np.cos(2 * phi)
+    return x, y, u, v
+
+
+# Compute vectormap data once
+def compute_vectormaps(average, step):
+    x_dict, y_dict, u_dict, v_dict = {}, {}, {}, {}
+    for minmax in range(2):
+        x, y, ur, vr = vectormap(
+            step,
+            average[minmax, 1, :, :],
+            average[minmax, 2, :, :],
+        )
+        x_dict[minmax] = x
+        y_dict[minmax] = y
+        u_dict["Q"] = ur
+        v_dict["Q"] = vr
+        u_dict["U"] = ur
+        v_dict["U"] = vr
+
+    return x_dict, y_dict, u_dict, v_dict
+
+
+# Function for plotting
+def plot_param(ax, im_data, x, y, u, v, params, minmax, quiver_params=None):
+    im = ax.imshow(
+        im_data, extent=(-2.5, 2.5, -2.5, 2.5), origin="lower", cmap="coolwarm"
+    )
+    ax.grid()
+    ax.set_xlabel("Degrees")
+    ax.set_ylabel("Degrees")
+    ax.set_title(f"Average of the {'maxima' if minmax == 0 else 'minima'} of {params}")
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="20%", pad=0.05)
+    plt.colorbar(im, cax=cax, format="%.2f")
+
+    if quiver_params:
+        ax.quiver(x, y, u, v, scale=10, headwidth=1, color="black")
+
+
+# Function to compute data for one peak with an index
+def process_peak(smooth_map, index, minmax, j, nside):
+    lon, lat = hp.pix2ang(nside, index[minmax, j], lonlat=True)
+    # rotate data to be centred on the peak
+    rot = hp.Rotator(rot=[lon, lat], deg=True)
+    cmap = rot.rotate_map_alms(smooth_map)
+    # find the neighbours around the peak (vector = (1,0,0))
+    neigh = hp.query_disc(nside, np.array([1, 0, 0]), np.radians(np.sqrt(2 * 2.5**2)))
+    neigh_lon, neigh_lat = hp.pix2ang(nside, neigh, lonlat=True)
+    # compute phi noting longitude goes from 0 to 360
+    phi = np.arctan2(neigh_lat, np.where(neigh_lon < 180, neigh_lon, neigh_lon - 360))
+
+    pol_map = np.zeros((2, hp.nside2npix(nside)))
+    pol_map[0, neigh] = Qr(cmap[1, neigh], cmap[2, neigh], phi)
+    pol_map[1, neigh] = Ur(cmap[1, neigh], cmap[2, neigh], phi)
+    # made map of only the neighbours of peak in original coordinates
+    result = np.zeros((5, 200, 200))
+    for pindx in range(5):
+        if pindx < 3:
+            gnom_map = hp.gnomview(
+                cmap[pindx, :],
+                reso=5 * 60 / 200,
+                return_projected_map=True,
+                no_plot=True,
+            )
+        else:
+            gnom_map = hp.gnomview(
+                pol_map[pindx - 3, :],
+                reso=5 * 60 / 200,
+                return_projected_map=True,
+                no_plot=True,
+            )
+        result[pindx, :, :] = gnom_map
+    return minmax, result
+
+
+def stack_cmb_params(no_spots, lensing=True, nside=512):
+    planck2018pars = camb.read_ini("planck_2018.ini")
     planck2018 = camb.get_results(planck2018pars)
-    # use unnormalised Cl
     powers = planck2018.get_cmb_power_spectra(
         planck2018pars, CMB_unit="muK", raw_cl=True
     )
-    # total power spectrum
-    aCl_Total = powers["total"]
-    # l starts from 0 (monopole)
-    lmax = aCl_Total.shape[0] - 1
-    # l steps
-    aL = np.arange(lmax + 1)
-    # generate alm for T E B using power spectra
+    if lensing:
+        aCl_Total = powers["total"]
+    else:
+        aCl_Total = powers["unlensed_total"]
     almT, almE, almB = hp.synalm(
         [
             np.array(aCl_Total[:, 0]),
@@ -63,66 +144,100 @@ def stack_cmb_params(no_spots, param_file="planck_2018.ini", nside=512):
     sharp_map = hp.alm2map([almT, almE, almB], nside=nside)
     smooth = hp.smoothing(sharp_map, np.radians(0.5))
 
-    # finding no_spots peaks from top and bottom temperature values
-    # indices of the spots 0 = top, 1 = bottom
     index = np.array(
         [np.argsort(smooth[0])[-no_spots:], np.argsort(smooth[0])[:no_spots]]
     )
 
-    # generate array for final averaged map data
-    # 0 = max 1 = min
-    # 0 = temperature, 1 = Q, 2=U, 3=Qr, 4=Ur
     stacked = np.zeros((2, 5, 200, 200))
 
-    # for loop to identify and sum all peaks and neighbours
-    for i in range(len(index[0, :])):
-        # sum for max and min
-        for j in range(2):
-            # finding angular positions of pixels in longitude and latitude degrees
-            lon, lat = hp.pix2ang(nside, index[j, i], lonlat=True)
-            # find position vector of given angular positions
-            pos = hp.ang2vec(lon, lat, lonlat=True)
-            # finding neighbours in a 5x5 degree area centred at the central point
-            neigh = hp.query_disc(nside, pos, np.radians(np.sqrt(2 * 2.5**2)))
-            # position of all neighbour points
-            neigh_lon, neigh_lat = hp.pix2ang(nside, neigh, lonlat=True)
-            # creating an empty map to insert local values
-            empty = np.zeros((5, hp.nside2npix(nside)))
-            # angle from the east
-            phi = east_phi(lon, lat, neigh_lon, neigh_lat)
-            # for loop for each parameter
-            for k in range(5):
-                if k < 3:
-                    empty[k, neigh] = smooth[k, neigh]
-                elif k == 3:
-                    empty[k, neigh] = Qr(smooth[1, neigh], smooth[2, neigh], phi)
-                else:
-                    empty[k, neigh] = Ur(smooth[1, neigh], smooth[2, neigh], phi)
-                # forming a gnomomic map centred at the peak
-                stacked[j, k, :, :] += hp.gnomview(
-                    empty[k, :],
-                    rot=(lon, lat),
-                    reso=5 * 60 / 200,
-                    return_projected_map=True,
-                    no_plot=True,
-                )
+    mp.set_start_method("spawn", force=True)
+    with parallel_backend("loky"):
+        results = Parallel(n_jobs=cpu, timeout=600)(
+            delayed(process_peak)(smooth, index, minmax, j, nside)
+            for minmax in range(2)
+            for j in range(no_spots)
+        )
+    for minmax, result in results:
+        stacked[minmax, :, :, :] += result
     stacked /= no_spots
-    # returns array of averaged points around the peak of dimensions [min/max, params, x, y]
     return stacked
 
 
-# Function which takes staked map of Q and U and returns input for plt.quiver
+# Run function
+peaks = 20000
+
+start_time = time.time()
+lensed = stack_cmb_params(peaks, lensing=True)
+end_time = time.time()
+print(f"Runtime for lensed stack: {end_time - start_time} seconds")
+
+# saving data for analysis as csv with a file for array shape
+df_lensed = pd.DataFrame(lensed.reshape(-1, lensed.shape[-1]))
+df_lensed.to_csv("Output/lensed.csv", index=False)
+lensed_shape = "lensed_shape.txt"
+with open(lensed_shape, "w") as f:
+    f.write(",".join(map(str, lensed.shape)))
+
+start_time = time.time()
+nolens = stack_cmb_params(peaks, lensing=False)
+end_time = time.time()
+print(f"Runtime for nolens stack: {end_time - start_time} seconds")
+
+# saving data for analysis as csv with a file for array shape
+df_nolens = pd.DataFrame(nolens.reshape(-1, nolens.shape[-1]))
+df_nolens.to_csv("Output/nolens.csv", index=False)
+nolens_shape = "nolens_shape.txt"
+with open(nolens_shape, "w") as f:
+    f.write(",".join(map(str, nolens.shape)))
+
+step = 8
+x_dict, y_dict, ul_dict, vl_dict = compute_vectormaps(lensed, step)
+x_dict, y_dict, un_dict, vn_dict = compute_vectormaps(nolens, step)
+
+figl, axl = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
+fign, axn = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
+
+for minmax in range(2):
+    for params, name in zip(
+        range(5),
+        [
+            "Temperature",
+            "Q Polarisation",
+            "U Polarisation",
+            "Qr Polarisation",
+            "Ur Polarisation",
+        ],
+    ):
+        quiver_params = None
+        if params == 3:
+            quiver_params = "Q"
+        elif params == 4:
+            quiver_params = "U"
+
+        plot_param(
+            axn[params, minmax],
+            nolens[minmax, params, :, :],
+            x_dict[minmax],
+            y_dict[minmax],
+            un_dict.get(quiver_params, None),
+            vn_dict.get(quiver_params, None),
+            name,
+            minmax,
+            quiver_params,
+        )
+
+        plot_param(
+            axl[params, minmax],
+            lensed[minmax, params, :, :],
+            x_dict[minmax],
+            y_dict[minmax],
+            ul_dict.get(quiver_params, None),
+            vl_dict.get(quiver_params, None),
+            name,
+            minmax,
+            quiver_params,
+        )
 
 
-def vectormap(step, Q, U):
-    sample_row = np.arange(0, 200, step)
-    sample_col = np.arange(0, 200, step)
-    psi, P = pol_vec(
-        Q[np.ix_(sample_row, sample_col)], U[np.ix_(sample_row, sample_col)]
-    )
-    x, y = np.meshgrid(
-        np.arange(-2.5, 2.5, step / 200 * 5), np.arange(-2.5, 2.5, step / 200 * 5)
-    )
-    u = P * np.cos(psi)
-    v = P * np.sin(psi)
-    return x, y, u, v
+figl.savefig("Output/Lensed_Average.png")
+fign.savefig("Output/Nolensed_Average.png")
