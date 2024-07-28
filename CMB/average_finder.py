@@ -241,5 +241,3 @@ for minmax in range(2):
 
 figl.savefig("Output/Lensed_Average.png")
 fign.savefig("Output/Nolensed_Average.png")
-
-plt.show()
