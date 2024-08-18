@@ -32,7 +32,7 @@ def Ur(Q, U, phi):
 # Generate polarization vectors using Numba
 @jit(nopython=True)
 def pol_vec(Q, U):
-    phi = 0.5 * np.arctan2(U, Q)
+    phi = 0.5 * np.arctan2(-U, Q)
     P = np.sqrt(Q**2 + U**2)
     return phi, P
 
@@ -45,8 +45,8 @@ def vectormap(step, Q, U):
         np.linspace(-2.5, 2.5, Q.shape[1] // step),
         np.linspace(-2.5, 2.5, Q.shape[0] // step),
     )
-    u = -P * np.sin(2 * phi)
-    v = P * np.cos(2 * phi)
+    u = P * np.cos(phi)
+    v = P * np.sin(phi)
     return x, y, u, v
 
 
@@ -61,16 +61,14 @@ def compute_vectormaps(average, step):
         )
         x_dict[minmax] = x
         y_dict[minmax] = y
-        u_dict["Q"] = ur
-        v_dict["Q"] = vr
-        u_dict["U"] = ur
-        v_dict["U"] = vr
+        u_dict[minmax] = ur
+        v_dict[minmax] = vr
 
     return x_dict, y_dict, u_dict, v_dict
 
 
 # Function for plotting
-def plot_param(ax, im_data, x, y, u, v, params, minmax, quiver_params=None):
+def plot_param(ax, im_data, x, y, u, v, params, minmax, quiver_required):
     im = ax.imshow(
         im_data, extent=(-2.5, 2.5, -2.5, 2.5), origin="lower", cmap="coolwarm"
     )
@@ -82,8 +80,8 @@ def plot_param(ax, im_data, x, y, u, v, params, minmax, quiver_params=None):
     cax = divider.append_axes("right", size="20%", pad=0.05)
     plt.colorbar(im, cax=cax, format="%.2f")
 
-    if quiver_params:
-        ax.quiver(x, y, u, v, scale=10, headwidth=1, color="black")
+    if quiver_required:
+        ax.quiver(x, y, u, v, scale=10, headwidth=0, color="black")
 
 
 # Function to compute data for one peak with an index
@@ -198,32 +196,27 @@ figl, axl = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
 fign, axn = plt.subplots(5, 2, figsize=(16, 24), dpi=300)
 
 for minmax in range(2):
-    for params, name in zip(
-        range(5),
+    for params, name in enumerate(
         [
             "Temperature",
             "Q Polarisation",
             "U Polarisation",
             "Qr Polarisation",
             "Ur Polarisation",
-        ],
+        ]
     ):
-        quiver_params = None
-        if params == 3:
-            quiver_params = "Q"
-        elif params == 4:
-            quiver_params = "U"
+        quiver_required = params in [3, 4]
 
         plot_param(
             axn[params, minmax],
             nolens[minmax, params, :, :],
             x_dict[minmax],
             y_dict[minmax],
-            un_dict.get(quiver_params, None),
-            vn_dict.get(quiver_params, None),
+            un_dict[minmax] if quiver_required else None,
+            vn_dict[minmax] if quiver_required else None,
             name,
             minmax,
-            quiver_params,
+            quiver_required,
         )
 
         plot_param(
@@ -231,11 +224,11 @@ for minmax in range(2):
             lensed[minmax, params, :, :],
             x_dict[minmax],
             y_dict[minmax],
-            ul_dict.get(quiver_params, None),
-            vl_dict.get(quiver_params, None),
+            ul_dict[minmax] if quiver_required else None,
+            vl_dict[minmax] if quiver_required else None,
             name,
             minmax,
-            quiver_params,
+            quiver_required,
         )
 
 
